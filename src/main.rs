@@ -11,7 +11,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Anc {mode: Option<AncMode>}
+    /// Set or get active noise cancellation mode
+    Anc {mode: Option<AncMode>},
+    /// Get device information
+    Info
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -39,6 +42,7 @@ enum AncMode {
         }
     }
 }
+
 
 async fn send_anc_command(anc_mode: AncMode, socket: &mut Stream) -> Result<(), std::io::Error> {
     let data: [u8; 13] = match anc_mode {
@@ -71,6 +75,7 @@ async fn main() -> bluer::Result<()>{
         .find(|&addr| matches!(addr, bluer::Address([0x2C, 0xBE, 0xEB, _, _, _]))).unwrap();
 
 
+
     let mut socket = Stream::connect(bluer::rfcomm::SocketAddr {
         addr: *ear_address,
         channel: 15}).await?;
@@ -78,13 +83,34 @@ async fn main() -> bluer::Result<()>{
     match cli.command {
         Commands::Anc {mode: None} => {
             socket.write_all(&[0x55, 0x60, 0x01, 0x1e, 0xc0, 0x01, 0x00, 0x0c, 0x03, 0x98, 0x19]).await?;
-            let mut response_buffer: [u8; 16] = [0; 16];
+            let mut response_buffer = [0; 16];
             socket.read_exact(&mut response_buffer).await?;
             let anc_mode: AncMode = response_buffer[9].try_into()?;
             println!("{:?}", anc_mode);
-        }
-        Commands::Anc { mode: Some(mode) } => {
-            send_anc_command(mode, &mut socket).await?;
+        },
+        Commands::Anc { mode: Some(mode) } => send_anc_command(mode, &mut socket).await?,
+        Commands::Info => {
+            let device = adapter.device(*ear_address)?;
+
+            println!("Bluetooth address: {}", ear_address);
+            println!("Name: {:?}", device.alias().await?);
+
+            socket.write_all(&[0x55, 0x60, 0x01, 0x42, 0xc0, 0x00, 0x00, 0x03, 0xe0, 0xd1]).await?;
+            let mut response_buffer = [0; 8];
+            socket.read_exact(&mut response_buffer).await?;
+
+            let fw_version_str_len: usize = response_buffer[5] as usize;
+            let mut response_buffer = vec![0_u8; fw_version_str_len + 2];
+            socket.read_exact(&mut response_buffer).await?;
+
+            let fw_version_str = String::from_utf8_lossy(&response_buffer[0..fw_version_str_len]);
+            println!("Firmware version: {}", fw_version_str);
+
+            socket.write_all(&[0x55, 0x60, 0x01, 0x06, 0xc0, 0x00, 0x00, 0x05, 0x90, 0xdc]).await?;
+            let mut response_buffer = [0; 47];
+            socket.read_exact(&mut response_buffer).await?;
+            let serial_number = String::from_utf8_lossy(&response_buffer[31..47]);
+            println!("Serial number: {}", serial_number);
         }
     }
     Ok(())
